@@ -211,6 +211,15 @@ impl RenderOnce for Button {
         let style = self.resolved_style();
         let on_click = self.on_click;
 
+        if disabled && focus_handle.is_focused(window) {
+            let focused = focus_handle.clone();
+            window.defer(cx, move |window, cx| {
+                if focused.is_focused(window) {
+                    window.blur(cx);
+                }
+            });
+        }
+
         self.base
             // Centering is part of Button's control geometry. Without a flex
             // formatting context an ordinary child starts at the root's
@@ -277,10 +286,12 @@ mod tests {
         button_clicks: Rc<Cell<usize>>,
         parent_clicks: Rc<Cell<usize>>,
         keyboard_events: Rc<Cell<usize>>,
+        focus_seen: Rc<Cell<bool>>,
     }
 
     impl Render for ButtonHarness {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.focus_seen.set(window.focused(cx).is_some());
             let button_clicks = self.button_clicks.clone();
             let keyboard_events = self.keyboard_events.clone();
             let parent_clicks = self.parent_clicks.clone();
@@ -325,6 +336,7 @@ mod tests {
                 button_clicks,
                 parent_clicks,
                 keyboard_events,
+                focus_seen: Rc::new(Cell::new(false)),
             }
         });
         cx.update(|window, cx| {
@@ -377,6 +389,49 @@ mod tests {
 
         assert_eq!(button_clicks.get(), 0);
         assert_eq!(parent_clicks.get(), 0);
+    }
+
+    #[gpui::test]
+    fn disabling_a_focused_button_blurs_it_and_enabling_does_not_refocus(cx: &mut TestAppContext) {
+        let button_clicks = Rc::new(Cell::new(0));
+        let focus_seen = Rc::new(Cell::new(false));
+        let (view, cx) = cx.add_window_view({
+            let button_clicks = button_clicks.clone();
+            let focus_seen = focus_seen.clone();
+            move |_, _| ButtonHarness {
+                disabled: false,
+                button_clicks,
+                parent_clicks: Rc::new(Cell::new(0)),
+                keyboard_events: Rc::new(Cell::new(0)),
+                focus_seen,
+            }
+        });
+        let set_disabled = |cx: &mut VisualTestContext, disabled: bool| {
+            view.update(cx, |harness, cx| {
+                harness.disabled = disabled;
+                cx.notify();
+            });
+        };
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.focus_next(cx);
+            window.draw(cx).clear(cx);
+            assert!(window.focused(cx).is_some());
+        });
+        assert!(focus_seen.get());
+
+        set_disabled(cx, true);
+        cx.update(|window, cx| assert!(window.focused(cx).is_none()));
+        assert!(
+            !focus_seen.get(),
+            "the blur must bring a new frame, so a view that read focus before the \
+             button rendered sees it gone without another draw"
+        );
+
+        set_disabled(cx, false);
+        cx.update(|window, cx| assert!(window.focused(cx).is_none()));
+        cx.simulate_keystrokes("enter space");
+        assert_eq!(button_clicks.get(), 0);
     }
 
     #[gpui::test]
