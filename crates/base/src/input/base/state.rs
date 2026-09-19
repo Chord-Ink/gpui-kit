@@ -3091,6 +3091,7 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
             .projected_editor_style
             .resolved(crate::Theme::global(cx).tokens());
         let entity = cx.entity();
+        crate::button::blur_when_disabled(&self.focus_handle, self.disabled, window, cx);
         if self._pending_update {
             self.mode.update_highlighter::<M>(
                 super::mode::HighlighterUpdate {
@@ -3112,7 +3113,8 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
         let element = div()
             .id("input-state")
             .key_context(CONTEXT)
-            .track_focus(&self.focus_handle)
+            // A disabled input is neither focusable nor a tab stop.
+            .when(!self.disabled, |this| this.track_focus(&self.focus_handle))
             .when(self.is_editable(), |this| {
                 this.on_action(window.listener_for(&entity, InputBaseState::backspace))
                     .on_action(window.listener_for(&entity, InputBaseState::delete))

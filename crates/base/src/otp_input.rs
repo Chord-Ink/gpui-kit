@@ -1,4 +1,4 @@
-use crate::{StyledExt as _, input::blink_cursor::BlinkCursor};
+use crate::{StyledExt as _, button::blur_when_disabled, input::blink_cursor::BlinkCursor};
 use gpui::{
     AnyElement, App, AppContext as _, Context, Empty, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement, Render, RenderOnce,
@@ -196,12 +196,14 @@ impl ParentElement for OtpInput {
 impl RenderOnce for OtpInput {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let state = self.state;
+        let focus_handle = state.read(cx).focus_handle.clone();
+        blur_when_disabled(&focus_handle, self.disabled, window, cx);
         div()
             .id(("base-otp-input", state.entity_id()))
-            // A code field is a form control: Tab reaches it unless disabled.
-            .track_focus(&state.read(cx).focus_handle.clone().tab_stop(!self.disabled))
+            // A code field is a form control: Tab and a click reach it unless disabled.
             .when(!self.disabled, |this| {
-                this.on_key_down(window.listener_for(&state, OtpState::on_key_down))
+                this.track_focus(&focus_handle.tab_stop(true))
+                    .on_key_down(window.listener_for(&state, OtpState::on_key_down))
             })
             .children(self.children)
             .refine_style(&self.style)
