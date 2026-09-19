@@ -204,6 +204,27 @@ impl InteractiveElement for Button {
 
 impl StatefulInteractiveElement for Button {}
 
+/// Blurs the window after this draw when a disabled control still holds focus,
+/// as a native control does once it becomes disabled.
+///
+/// The blur is deferred so it lands outside the render and brings its own
+/// frame; enabling the control again does not bring focus back.
+pub(crate) fn blur_when_disabled(
+    focus_handle: &FocusHandle,
+    disabled: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if disabled && focus_handle.is_focused(window) {
+        let focused = focus_handle.clone();
+        window.defer(cx, move |window, cx| {
+            if focused.is_focused(window) {
+                window.blur(cx);
+            }
+        });
+    }
+}
+
 impl RenderOnce for Button {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let focus_handle = self.focus_handle(window, cx);
@@ -211,14 +232,7 @@ impl RenderOnce for Button {
         let style = self.resolved_style();
         let on_click = self.on_click;
 
-        if disabled && focus_handle.is_focused(window) {
-            let focused = focus_handle.clone();
-            window.defer(cx, move |window, cx| {
-                if focused.is_focused(window) {
-                    window.blur(cx);
-                }
-            });
-        }
+        blur_when_disabled(&focus_handle, disabled, window, cx);
 
         self.base
             // Centering is part of Button's control geometry. Without a flex
