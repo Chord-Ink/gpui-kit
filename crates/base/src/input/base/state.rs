@@ -3167,25 +3167,27 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
             .on_action(window.listener_for(&entity, InputBaseState::on_action_search))
             .on_action(window.listener_for(&entity, InputBaseState::on_action_replace))
             .on_key_down(window.listener_for(&entity, InputBaseState::on_key_down))
-            .on_mouse_down(
-                MouseButton::Left,
-                window.listener_for(&entity, InputBaseState::on_mouse_down),
-            )
-            .on_mouse_down(
-                MouseButton::Right,
-                window.listener_for(&entity, InputBaseState::on_mouse_down),
-            )
-            .on_mouse_up(
-                MouseButton::Left,
-                window.listener_for(&entity, InputBaseState::on_mouse_up),
-            )
-            .on_mouse_up(
-                MouseButton::Right,
-                window.listener_for(&entity, InputBaseState::on_mouse_up),
-            )
-            .on_mouse_move(window.listener_for(&entity, InputBaseState::on_mouse_move))
-            .on_scroll_wheel(window.listener_for(&entity, InputBaseState::on_scroll_wheel))
-            .when(!self.disabled, |this| this.cursor_text())
+            .when(!self.disabled, |this| {
+                this.on_mouse_down(
+                    MouseButton::Left,
+                    window.listener_for(&entity, InputBaseState::on_mouse_down),
+                )
+                .on_mouse_down(
+                    MouseButton::Right,
+                    window.listener_for(&entity, InputBaseState::on_mouse_down),
+                )
+                .on_mouse_up(
+                    MouseButton::Left,
+                    window.listener_for(&entity, InputBaseState::on_mouse_up),
+                )
+                .on_mouse_up(
+                    MouseButton::Right,
+                    window.listener_for(&entity, InputBaseState::on_mouse_up),
+                )
+                .on_mouse_move(window.listener_for(&entity, InputBaseState::on_mouse_move))
+                .on_scroll_wheel(window.listener_for(&entity, InputBaseState::on_scroll_wheel))
+                .cursor_text()
+            })
             .flex_1()
             .when(self.is_multi_line(), |this| this.h_full())
             .flex_grow_1()
