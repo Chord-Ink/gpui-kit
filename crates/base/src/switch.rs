@@ -8,7 +8,7 @@ use gpui::{
 };
 use smallvec::SmallVec;
 
-use crate::{StateStyle, StyledExt as _};
+use crate::{StateStyle, StyledExt as _, button::blur_when_disabled};
 
 type ChangeHandler = Rc<dyn Fn(bool, &ClickEvent, &mut Window, &mut App)>;
 
@@ -360,6 +360,8 @@ impl RenderOnce for Switch {
         let disabled = self.disabled;
         let style = self.resolved_style();
 
+        blur_when_disabled(&focus_handle, disabled, window, cx);
+
         self.base
             .role(Role::Switch)
             .aria_toggled(if checked {
@@ -514,10 +516,12 @@ mod tests {
         keyboard_events: Rc<Cell<usize>>,
         last_value: Rc<Cell<bool>>,
         parent_clicks: Rc<Cell<usize>>,
+        focus_seen: Rc<Cell<bool>>,
     }
 
     impl Render for SwitchHarness {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.focus_seen.set(window.focused(cx).is_some());
             let toggles = self.toggles.clone();
             let keyboard_events = self.keyboard_events.clone();
             let last_value = self.last_value.clone();
@@ -571,6 +575,7 @@ mod tests {
                 keyboard_events,
                 last_value,
                 parent_clicks,
+                focus_seen: Rc::new(Cell::new(false)),
             }
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -626,6 +631,52 @@ mod tests {
 
         assert_eq!(toggles.get(), 0);
         assert_eq!(parent_clicks.get(), 0);
+    }
+
+    #[gpui::test]
+    fn disabling_a_focused_switch_blurs_it_and_enabling_does_not_refocus(cx: &mut TestAppContext) {
+        let toggles = Rc::new(Cell::new(0));
+        let focus_seen = Rc::new(Cell::new(false));
+        let (view, cx) = cx.add_window_view({
+            let toggles = toggles.clone();
+            let focus_seen = focus_seen.clone();
+            move |_, _| SwitchHarness {
+                checked: false,
+                disabled: false,
+                toggles,
+                keyboard_events: Rc::new(Cell::new(0)),
+                last_value: Rc::new(Cell::new(false)),
+                parent_clicks: Rc::new(Cell::new(0)),
+                focus_seen,
+            }
+        });
+        let set_disabled = |cx: &mut VisualTestContext, disabled: bool| {
+            view.update(cx, |harness, cx| {
+                harness.disabled = disabled;
+                cx.notify();
+            });
+        };
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.focus_next(cx);
+            window.draw(cx).clear(cx);
+            assert!(window.focused(cx).is_some());
+        });
+        assert!(focus_seen.get());
+
+        set_disabled(cx, true);
+        cx.update(|window, cx| assert!(window.focused(cx).is_none()));
+        assert!(
+            !focus_seen.get(),
+            "the blur must bring a new frame, so a view that read focus before the \
+             switch rendered sees it gone without another draw"
+        );
+
+        set_disabled(cx, false);
+        cx.update(|window, cx| assert!(window.focused(cx).is_none()));
+        activate_key(cx, "enter");
+        activate_key(cx, "space");
+        assert_eq!(toggles.get(), 0);
     }
 
     #[test]

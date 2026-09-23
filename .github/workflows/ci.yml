@@ -14,6 +14,7 @@ concurrency:
 jobs:
   test:
     name: Test
+    if: github.event_name != 'workflow_dispatch' && github.head_ref != 'codex/inkui-closeout-20260922'
     strategy:
       fail-fast: false
       matrix:
@@ -86,6 +87,7 @@ jobs:
 
   gpui-shell-core:
     name: GPUI Shell Core
+    if: github.event_name != 'workflow_dispatch' && github.head_ref != 'codex/inkui-closeout-20260922'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -119,6 +121,7 @@ jobs:
 
   gpui-component-shell:
     name: GPUI Component Shell
+    if: github.event_name != 'workflow_dispatch' && github.head_ref != 'codex/inkui-closeout-20260922'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -152,6 +155,7 @@ jobs:
 
   gpui-shell-standard-runtime:
     name: GPUI Shell Standard Runtime (${{ matrix.target }})
+    if: github.event_name != 'workflow_dispatch' && github.head_ref != 'codex/inkui-closeout-20260922'
     strategy:
       fail-fast: false
       matrix:

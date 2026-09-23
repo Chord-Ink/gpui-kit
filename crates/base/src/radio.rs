@@ -8,7 +8,7 @@ use gpui::{
 };
 use smallvec::SmallVec;
 
-use crate::{StateStyle, StyledExt as _};
+use crate::{StateStyle, StyledExt as _, button::blur_when_disabled};
 
 type ChangeHandler = Rc<dyn Fn(bool, &ClickEvent, &mut Window, &mut App)>;
 
@@ -198,6 +198,8 @@ impl RenderOnce for Radio {
         let style = self.resolved_style();
         let on_change = self.on_change;
 
+        blur_when_disabled(&focus_handle, disabled, window, cx);
+
         self.base
             .role(Role::RadioButton)
             .aria_toggled(if checked {
@@ -306,10 +308,12 @@ mod tests {
         disabled: bool,
         changes: Rc<Cell<usize>>,
         keyboard_changes: Rc<Cell<usize>>,
+        focus_seen: Rc<Cell<bool>>,
     }
 
     impl Render for RadioHarness {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.focus_seen.set(window.focused(cx).is_some());
             let changes = self.changes.clone();
             let keyboard_changes = self.keyboard_changes.clone();
             Radio::new("radio")
@@ -341,6 +345,7 @@ mod tests {
                 disabled,
                 changes,
                 keyboard_changes,
+                focus_seen: Rc::new(Cell::new(false)),
             }
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -376,6 +381,49 @@ mod tests {
             cx.simulate_keystrokes("enter space");
             assert_eq!(changes.get(), 0);
         }
+    }
+
+    #[gpui::test]
+    fn disabling_a_focused_radio_blurs_it_and_enabling_does_not_refocus(cx: &mut TestAppContext) {
+        let changes = Rc::new(Cell::new(0));
+        let focus_seen = Rc::new(Cell::new(false));
+        let (view, cx) = cx.add_window_view({
+            let changes = changes.clone();
+            let focus_seen = focus_seen.clone();
+            move |_, _| RadioHarness {
+                checked: false,
+                disabled: false,
+                changes,
+                keyboard_changes: Rc::new(Cell::new(0)),
+                focus_seen,
+            }
+        });
+        let set_disabled = |cx: &mut VisualTestContext, disabled: bool| {
+            view.update(cx, |harness, cx| {
+                harness.disabled = disabled;
+                cx.notify();
+            });
+        };
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.focus_next(cx);
+            window.draw(cx).clear(cx);
+            assert!(window.focused(cx).is_some());
+        });
+        assert!(focus_seen.get());
+
+        set_disabled(cx, true);
+        cx.update(|window, cx| assert!(window.focused(cx).is_none()));
+        assert!(
+            !focus_seen.get(),
+            "the blur must bring a new frame, so a view that read focus before the \
+             radio rendered sees it gone without another draw"
+        );
+
+        set_disabled(cx, false);
+        cx.update(|window, cx| assert!(window.focused(cx).is_none()));
+        cx.simulate_keystrokes("enter space");
+        assert_eq!(changes.get(), 0);
     }
 
     #[gpui::test]

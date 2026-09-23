@@ -1,7 +1,6 @@
 use gpui::{
-    AnyElement, App, Entity, Focusable, InteractiveElement as _, IntoElement, MouseButton,
-    ParentElement as _, Pixels, RenderOnce, Styled as _, Window, div, prelude::FluentBuilder, px,
-    size,
+    AnyElement, App, Entity, Focusable, InteractiveElement as _, IntoElement, ParentElement as _,
+    Pixels, RenderOnce, Styled as _, Window, div, prelude::FluentBuilder, px, size,
 };
 
 use super::input::input_style;
@@ -86,6 +85,7 @@ impl RenderOnce for OtpInput {
         let state = self.state.read(cx);
         let blink_show = state.cursor_visible(cx);
         let is_focused = state.focus_handle(cx).is_focused(window);
+        let base = BaseOtpInput::new(&self.state).disabled(self.disabled);
 
         let text_size = match self.size {
             Size::XSmall => px(14.),
@@ -99,11 +99,7 @@ impl RenderOnce for OtpInput {
         let caret = cx.theme().caret_style();
         let caret_height = caret_cell_height(text_size, window);
 
-        let cursor_ix = state
-            .value()
-            .chars()
-            .count()
-            .min(state.len().saturating_sub(1));
+        let cursor_ix = state.active_index();
         let number_of_groups = Self::resolved_groups(state.len(), self.number_of_groups);
         let mut groups: Vec<Vec<AnyElement>> = Vec::with_capacity(number_of_groups);
         let mut group_ix = 0;
@@ -125,76 +121,73 @@ impl RenderOnce for OtpInput {
             let caret_visible = is_input_focused && !self.disabled && blink_show;
 
             groups[group_ix].push(
-                h_flex()
-                    .id(ix)
-                    .border_1()
-                    .border_color(cx.theme().input)
-                    .bg(bg)
-                    .text_color(fg)
-                    .when(self.disabled, |this| this.opacity(0.5))
-                    .when(focus_visible, |this| this.border_color(cx.theme().ring))
-                    .items_center()
-                    .justify_center()
-                    .rounded(cx.theme().radius)
-                    .text_size(text_size)
-                    .map(|this| match self.size {
-                        Size::XSmall => this.w_6().h_6(),
-                        Size::Small => this.w_6().h_6(),
-                        Size::Medium => this.w_8().h_8(),
-                        Size::Large => this.w_11().h_11(),
-                        Size::Size(px) => this.w(px).h(px),
-                    })
-                    .when(focus_visible, |this| this.focus_ring_style(window, cx))
-                    .on_mouse_down(MouseButton::Left, {
-                        let state = self.state.clone();
-                        move |_, window, cx| state.read(cx).focus_handle(cx).focus(window, cx)
-                    })
-                    .map(|this| match c {
-                        Some(c) => {
-                            if state.is_masked() {
-                                this.child(
-                                    Icon::new(IconName::Asterisk)
-                                        .text_color(cx.theme().secondary_foreground)
-                                        .when(self.disabled, |this| {
-                                            this.text_color(cx.theme().muted_foreground)
-                                        })
-                                        .with_size(text_size),
-                                )
-                            } else {
-                                this.child(c.to_string())
-                            }
-                        }
-                        None => this.when(caret_visible, |this| {
-                            this.child(
-                                div()
-                                    .flex_none()
-                                    .w(caret.width())
-                                    .h(caret_height)
-                                    .rounded(
-                                        caret.clamped_radius(size(caret.width(), caret_height)),
+                base.cell(
+                    ix,
+                    h_flex()
+                        .id(ix)
+                        .border_1()
+                        .border_color(cx.theme().input)
+                        .bg(bg)
+                        .text_color(fg)
+                        .when(self.disabled, |this| this.opacity(0.5))
+                        .when(focus_visible, |this| this.border_color(cx.theme().ring))
+                        .items_center()
+                        .justify_center()
+                        .rounded(cx.theme().radius)
+                        .text_size(text_size)
+                        .map(|this| match self.size {
+                            Size::XSmall => this.w_6().h_6(),
+                            Size::Small => this.w_6().h_6(),
+                            Size::Medium => this.w_8().h_8(),
+                            Size::Large => this.w_11().h_11(),
+                            Size::Size(px) => this.w(px).h(px),
+                        })
+                        .when(focus_visible, |this| this.focus_ring_style(window, cx))
+                        .map(|this| match c {
+                            Some(c) => {
+                                if state.is_masked() {
+                                    this.child(
+                                        Icon::new(IconName::Asterisk)
+                                            .text_color(cx.theme().secondary_foreground)
+                                            .when(self.disabled, |this| {
+                                                this.text_color(cx.theme().muted_foreground)
+                                            })
+                                            .with_size(text_size),
                                     )
-                                    .bg(caret.color()),
-                            )
+                                } else {
+                                    this.child(c.to_string())
+                                }
+                            }
+                            None => this.when(caret_visible, |this| {
+                                this.child(
+                                    div()
+                                        .flex_none()
+                                        .w(caret.width())
+                                        .h(caret_height)
+                                        .rounded(
+                                            caret.clamped_radius(size(caret.width(), caret_height)),
+                                        )
+                                        .bg(caret.color()),
+                                )
+                            }),
                         }),
-                    })
-                    .into_any_element(),
+                )
+                .into_any_element(),
             );
         }
 
-        BaseOtpInput::new(&self.state)
-            .disabled(self.disabled)
-            .child(
-                v_flex()
-                    .id(("otp-input", self.state.entity_id()))
-                    .items_center()
-                    .child(
-                        h_flex().items_center().gap_5().children(
-                            groups
-                                .into_iter()
-                                .map(|inputs| h_flex().items_center().gap_1().children(inputs)),
-                        ),
+        base.child(
+            v_flex()
+                .id(("otp-input", self.state.entity_id()))
+                .items_center()
+                .child(
+                    h_flex().items_center().gap_5().children(
+                        groups
+                            .into_iter()
+                            .map(|inputs| h_flex().items_center().gap_1().children(inputs)),
                     ),
-            )
+                ),
+        )
     }
 }
 

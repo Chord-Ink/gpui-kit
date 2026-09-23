@@ -795,11 +795,16 @@ mod tests {
         });
         let cx: &mut VisualTestContext = cx;
 
+        // Each image the document loads renders the view once more.
         cx.run_until_parked();
-        assert!(
-            renders.load(Ordering::Relaxed) <= 2,
-            "an unchanged TextView must settle after its parse, but rendered {} times",
+        let settled = renders.load(Ordering::Relaxed);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(5));
+        cx.run_until_parked();
+        assert_eq!(
             renders.load(Ordering::Relaxed),
+            settled,
+            "an unchanged TextView must settle after its parse, but it kept rendering",
         );
     }
 
