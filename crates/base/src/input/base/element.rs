@@ -443,7 +443,7 @@ fn caret_height(
         .or_else(from_font)
         // Only reachable when the font itself reports nothing.
         .unwrap_or(0.85 * line_height)
-        .round()
+        .ceil()
         .max(px(1.))
 }
 
