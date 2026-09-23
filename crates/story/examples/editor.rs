@@ -875,6 +875,7 @@ impl Example {
             files: true,
             directories: true,
             multiple: false,
+            extensions: Vec::new(),
             prompt: Some("Select a source file".into()),
         });
 

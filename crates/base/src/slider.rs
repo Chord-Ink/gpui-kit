@@ -1,11 +1,12 @@
 use std::ops::Range;
 
 use gpui::{
-    AccessibleAction, Along, AnyElement, App, AppContext as _, Axis, Bounds, Context, Div,
-    DragMoveEvent, ElementId, Empty, Entity, EntityId, EventEmitter, GlobalElementId,
-    InteractiveElement, IntoElement, MouseButton, MouseDownEvent, Orientation, ParentElement,
-    Pixels, Point, Render, RenderOnce, Role, StatefulInteractiveElement, StyleRefinement, Styled,
-    Window, div, prelude::FluentBuilder as _, px,
+    AccessibleAction, Along, AnyElement, App, AppContext as _, Axis, Bounds, Context,
+    DispatchPhase, Div, ElementId, Entity, EventEmitter, FocusHandle, GlobalElementId,
+    InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Orientation, ParentElement, Pixels, Point, RenderOnce, Role, SharedString,
+    StatefulInteractiveElement, StyleRefinement, Styled, Window, canvas, div,
+    prelude::FluentBuilder as _, px,
 };
 
 use crate::{element_ext::ElementExt, geometry::AxisExt};
@@ -380,14 +381,35 @@ impl SliderState {
         let steps = ((value - self.min) / step).round().clamp(0., last_step);
         let value = (self.min + steps * step).min(self.max);
 
+        let before = self.value;
         if is_start {
             self.value.set_start(value);
         } else {
             self.value.set_end(value);
         }
         self.update_thumb_pos();
-        cx.emit(SliderEvent::Change(self.value));
-        cx.notify();
+        if self.value != before {
+            cx.emit(SliderEvent::Change(self.value));
+            cx.notify();
+        }
+    }
+
+    fn step_thumb(&mut self, start: bool, forward: bool, cx: &mut Context<Self>) {
+        let before = self.value;
+        let current = if start { before.start() } else { before.end() };
+        let step = if forward { self.step } else { -self.step };
+        let next = (current + step).clamp(self.min, self.max);
+        if start {
+            self.value.set_start(next);
+        } else {
+            self.value.set_end(next);
+        }
+        self.update_thumb_pos();
+        if self.value != before {
+            cx.emit(SliderEvent::Change(self.value));
+            cx.notify();
+        }
+        cx.emit(SliderEvent::Release(self.value));
     }
 
     /// Emit [`SliderEvent::Release`] if the user was actively interacting
@@ -402,24 +424,6 @@ impl SliderState {
     }
 }
 
-#[derive(Clone)]
-struct DragThumb((EntityId, bool, EntityId));
-
-impl Render for DragThumb {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        Empty
-    }
-}
-
-#[derive(Clone)]
-struct DragSlider(EntityId, EntityId);
-
-impl Render for DragSlider {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        Empty
-    }
-}
-
 /// An unstyled slider behavior root.
 ///
 /// Applications provide the track, range, and thumb presentation as children.
@@ -428,6 +432,7 @@ pub struct Slider {
     state: Entity<SliderState>,
     axis: Axis,
     disabled: bool,
+    label: Option<SharedString>,
     base: Div,
     children: Vec<AnyElement>,
 }
@@ -438,6 +443,7 @@ impl Slider {
             state: state.clone(),
             axis: Axis::Horizontal,
             disabled: false,
+            label: None,
             base: div(),
             children: Vec::new(),
         }
@@ -462,6 +468,11 @@ impl Slider {
         self.disabled = disabled;
         self
     }
+
+    pub fn accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
 }
 
 impl ParentElement for Slider {
@@ -478,43 +489,15 @@ impl Styled for Slider {
 
 impl RenderOnce for Slider {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let axis = self.axis;
         let entity_id = self.state.entity_id();
-        let state = self.state.read(cx);
-        let slider_state = self.state.clone();
+        if self.disabled {
+            self.state.update(cx, |state, _| state.dragging = false);
+        }
 
         self.base
             .id(("slider", entity_id))
-            .role(Role::Slider)
-            .aria_numeric_value(state.value().end() as f64)
-            .aria_min_numeric_value(state.min_value() as f64)
-            .aria_max_numeric_value(state.max_value() as f64)
-            .aria_numeric_value_step(state.step_value() as f64)
-            .aria_orientation(if axis.is_vertical() {
-                Orientation::Vertical
-            } else {
-                Orientation::Horizontal
-            })
-            .on_a11y_action(AccessibleAction::Increment, {
-                let state = slider_state.clone();
-                move |_, window, cx| {
-                    state.update(cx, |state, cx| {
-                        let value =
-                            (state.value().end() + state.step_value()).min(state.max_value());
-                        state.set_value(value, window, cx);
-                    });
-                }
-            })
-            .on_a11y_action(AccessibleAction::Decrement, {
-                let state = slider_state.clone();
-                move |_, window, cx| {
-                    state.update(cx, |state, cx| {
-                        let value =
-                            (state.value().end() - state.step_value()).max(state.min_value());
-                        state.set_value(value, window, cx);
-                    });
-                }
-            })
+            .role(Role::Group)
+            .when_some(self.label, |this, label| this.aria_label(label))
             .when(!self.disabled, |this| {
                 this.on_mouse_up(
                     MouseButton::Left,
@@ -581,7 +564,6 @@ impl InteractiveElement for SliderTrack {
 impl RenderOnce for SliderTrack {
     fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let axis = self.axis;
-        let entity_id = self.state.entity_id();
         let id = self
             .base
             .interactivity()
@@ -590,27 +572,31 @@ impl RenderOnce for SliderTrack {
             .unwrap_or_else(|| "slider-bar-container".into());
         let click_bounds =
             window.with_global_id(id.clone(), |id, window| geometry_at(id, window, cx));
-        let drag_bounds = click_bounds.clone();
-        let state = self.state.read(cx);
-        let is_range = state.value().is_range();
-        let percentage = state.percentage();
+        let pointer = pointer_events(self.state.clone(), click_bounds.clone(), axis);
+        click_bounds.update(cx, |track, _| {
+            track.focus = [None, None];
+            if self.disabled {
+                track.pressed = None;
+            }
+        });
         self.base
             .id(id)
             .children(self.children)
             .when(!self.disabled, |this| {
-                this.on_mouse_down(
+                this.child(pointer).on_mouse_down(
                     MouseButton::Left,
                     window.listener_for(
                         &self.state,
                         move |state, event: &MouseDownEvent, window, cx| {
-                            state.set_bounds(*click_bounds.read(cx));
-                            let is_start = if is_range {
+                            state.set_bounds(click_bounds.read(cx).bounds);
+                            let is_start = if state.value().is_range() {
                                 let size = state.bounds().size.along(axis);
                                 let position = if axis.is_horizontal() {
                                     event.position.x - state.bounds().left()
                                 } else {
                                     state.bounds().bottom() - event.position.y
                                 };
+                                let percentage = state.percentage();
                                 let center = ((percentage.end - percentage.start) / 2.
                                     + percentage.start)
                                     * size;
@@ -618,6 +604,17 @@ impl RenderOnce for SliderTrack {
                             } else {
                                 false
                             };
+                            let focus = click_bounds.update(cx, |track, _| {
+                                track.pressed = Some(ThumbPress {
+                                    start: is_start,
+                                    offset: px(0.),
+                                });
+                                track.focus[usize::from(!is_start)].clone()
+                            });
+                            if let Some(focus) = focus {
+                                focus.focus(window, cx);
+                                window.prevent_default();
+                            }
                             state.update_value_by_position(
                                 axis,
                                 event.position,
@@ -628,31 +625,6 @@ impl RenderOnce for SliderTrack {
                         },
                     ),
                 )
-                .when(!is_range, |this| {
-                    this.on_drag(
-                        DragSlider(entity_id, drag_bounds.entity_id()),
-                        |drag, _, _, cx| {
-                            cx.stop_propagation();
-                            cx.new(|_| drag.clone())
-                        },
-                    )
-                    .on_drag_move(window.listener_for(
-                        &self.state,
-                        move |state, event: &DragMoveEvent<DragSlider>, window, cx| {
-                            let DragSlider(id, geometry) = event.drag(cx);
-                            if *id == entity_id && *geometry == drag_bounds.entity_id() {
-                                state.set_bounds(*drag_bounds.read(cx));
-                                state.update_value_by_position(
-                                    axis,
-                                    event.event.position,
-                                    false,
-                                    window,
-                                    cx,
-                                );
-                            }
-                        },
-                    ))
-                })
             })
     }
 }
@@ -695,14 +667,73 @@ impl InteractiveElement for SliderIndicator {
 
 impl StatefulInteractiveElement for SliderIndicator {}
 
-fn geometry_at(id: &GlobalElementId, window: &mut Window, cx: &mut App) -> Entity<Bounds<Pixels>> {
-    window.with_element_state(id, |state: Option<Entity<Bounds<Pixels>>>, _| {
-        let state = state.unwrap_or_else(|| cx.new(|_| Bounds::default()));
+#[derive(Default)]
+struct TrackState {
+    bounds: Bounds<Pixels>,
+    focus: [Option<FocusHandle>; 2],
+    pressed: Option<ThumbPress>,
+}
+
+#[derive(Clone, Copy)]
+struct ThumbPress {
+    start: bool,
+    offset: Pixels,
+}
+
+fn pointer_events(
+    state: Entity<SliderState>,
+    geometry: Entity<TrackState>,
+    axis: Axis,
+) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |_, _, window, _| {
+            let move_state = state.clone();
+            let move_geometry = geometry.clone();
+            window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                if phase != DispatchPhase::Capture
+                    || event.pressed_button != Some(MouseButton::Left)
+                {
+                    return;
+                }
+                let track = move_geometry.read(cx);
+                let Some(press) = track.pressed else { return };
+                let bounds = track.bounds;
+                let mut position = event.position;
+                if axis.is_horizontal() {
+                    position.x -= press.offset;
+                } else {
+                    position.y -= press.offset;
+                }
+                move_state.update(cx, |state, cx| {
+                    if state.dragging {
+                        state.set_bounds(bounds);
+                        state.update_value_by_position(axis, position, press.start, window, cx);
+                    }
+                });
+            });
+            window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                if phase == DispatchPhase::Capture && event.button == MouseButton::Left {
+                    let held = geometry.update(cx, |track, _| track.pressed.take().is_some());
+                    if held {
+                        state.update(cx, |state, cx| state.handle_release(cx));
+                    }
+                }
+            });
+        },
+    )
+    .absolute()
+    .size_full()
+}
+
+fn geometry_at(id: &GlobalElementId, window: &mut Window, cx: &mut App) -> Entity<TrackState> {
+    window.with_element_state(id, |state: Option<Entity<TrackState>>, _| {
+        let state = state.unwrap_or_else(|| cx.new(|_| TrackState::default()));
         (state.clone(), state)
     })
 }
 
-fn track_geometry(window: &mut Window, cx: &mut App) -> Option<Entity<Bounds<Pixels>>> {
+fn track_geometry(window: &mut Window, cx: &mut App) -> Option<Entity<TrackState>> {
     window.with_global_id("slider-geometry".into(), |path, window| {
         let track_type = std::any::type_name::<SliderTrack>();
         let index = path
@@ -724,7 +755,7 @@ impl RenderOnce for SliderIndicator {
                 let state = self.state;
                 move |bounds, _, cx| {
                     if let Some(geometry) = geometry {
-                        geometry.update(cx, |geometry, _| *geometry = bounds);
+                        geometry.update(cx, |geometry, _| geometry.bounds = bounds);
                     }
                     state.update(cx, |state, _| state.set_bounds(bounds));
                 }
@@ -739,6 +770,7 @@ pub struct SliderThumb {
     axis: Axis,
     start: bool,
     disabled: bool,
+    focus: Option<FocusHandle>,
     base: Div,
     children: Vec<AnyElement>,
 }
@@ -750,6 +782,7 @@ impl SliderThumb {
             axis: Axis::Horizontal,
             start: false,
             disabled: false,
+            focus: None,
             base: div(),
             children: Vec::new(),
         }
@@ -765,6 +798,11 @@ impl SliderThumb {
     }
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    pub fn track_focus(mut self, focus: &FocusHandle) -> Self {
+        self.focus = Some(focus.clone());
         self
     }
 }
@@ -791,44 +829,103 @@ impl StatefulInteractiveElement for SliderThumb {}
 
 impl RenderOnce for SliderThumb {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let entity_id = self.state.entity_id();
         let axis = self.axis;
         let start = self.start;
         let drag_bounds = track_geometry(window, cx);
-        let geometry_id = drag_bounds.as_ref().map_or(entity_id, Entity::entity_id);
+        let standalone = drag_bounds.is_none();
+        let drag_bounds = drag_bounds.unwrap_or_else(|| {
+            window.use_keyed_state(("slider-thumb-drag", u32::from(start)), cx, |_, _| {
+                TrackState::default()
+            })
+        });
+        let focus = self.focus.unwrap_or_else(|| {
+            window
+                .use_keyed_state(("slider-thumb-focus", u32::from(start)), cx, |_, cx| {
+                    cx.focus_handle().tab_stop(true)
+                })
+                .read(cx)
+                .clone()
+        });
+        crate::button::blur_when_disabled(&focus, self.disabled, window, cx);
+        let fallback_bounds = self.state.read(cx).bounds();
+        drag_bounds.update(cx, |track, _| {
+            track.focus[usize::from(!start)] = (!self.disabled).then(|| focus.clone());
+            if standalone {
+                track.bounds = fallback_bounds;
+            }
+            if self.disabled && track.pressed.is_some_and(|press| press.start == start) {
+                track.pressed = None;
+            }
+        });
+        let pointer = pointer_events(self.state.clone(), drag_bounds.clone(), axis);
+        let state = self.state.read(cx);
+        let value = state.value();
+        let low = if value.is_range() && !start {
+            value.start()
+        } else {
+            state.min
+        };
+        let high = if value.is_range() && start {
+            value.end()
+        } else {
+            state.max
+        };
         self.base
             .id(("slider-thumb", start as u32))
+            .role(Role::Slider)
+            .aria_numeric_value(if start { value.start() } else { value.end() } as f64)
+            .aria_min_numeric_value(low as f64)
+            .aria_max_numeric_value(high as f64)
+            .aria_numeric_value_step(state.step as f64)
+            .aria_orientation(if axis.is_vertical() {
+                Orientation::Vertical
+            } else {
+                Orientation::Horizontal
+            })
             .children(self.children)
             .when(!self.disabled, |this| {
-                this.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_drag(
-                        DragThumb((entity_id, start, geometry_id)),
-                        |drag, _, _, cx| {
-                            cx.stop_propagation();
-                            cx.new(|_| drag.clone())
-                        },
+                this.when(standalone, |this| this.child(pointer))
+                    .track_focus(&focus)
+                    .on_a11y_action(AccessibleAction::Increment, {
+                        let state = self.state.clone();
+                        move |_, _, cx| {
+                            state.update(cx, |state, cx| state.step_thumb(start, true, cx))
+                        }
+                    })
+                    .on_a11y_action(AccessibleAction::Decrement, {
+                        let state = self.state.clone();
+                        move |_, _, cx| {
+                            state.update(cx, |state, cx| state.step_thumb(start, false, cx))
+                        }
+                    })
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        window.listener_for(
+                            &self.state,
+                            move |state, event: &MouseDownEvent, window, cx| {
+                                focus.focus(window, cx);
+                                state.dragging = true;
+                                let percentage = if start {
+                                    state.percentage.start
+                                } else {
+                                    state.percentage.end
+                                };
+                                drag_bounds.update(cx, |track, _| {
+                                    let center = if axis.is_horizontal() {
+                                        track.bounds.left() + track.bounds.size.width * percentage
+                                    } else {
+                                        track.bounds.bottom()
+                                            - track.bounds.size.height * percentage
+                                    };
+                                    track.pressed = Some(ThumbPress {
+                                        start,
+                                        offset: event.position.along(axis) - center,
+                                    });
+                                });
+                                cx.stop_propagation();
+                            },
+                        ),
                     )
-                    .on_drag_move(window.listener_for(
-                        &self.state,
-                        move |state, event: &DragMoveEvent<DragThumb>, window, cx| {
-                            let DragThumb((id, dragged_start, geometry)) = event.drag(cx);
-                            if *id == entity_id
-                                && *geometry == geometry_id
-                                && *dragged_start == start
-                            {
-                                if let Some(bounds) = &drag_bounds {
-                                    state.set_bounds(*bounds.read(cx));
-                                }
-                                state.update_value_by_position(
-                                    axis,
-                                    event.event.position,
-                                    *dragged_start,
-                                    window,
-                                    cx,
-                                );
-                            }
-                        },
-                    ))
             })
     }
 }
