@@ -1,13 +1,6 @@
 name: CI
 on:
   pull_request:
-  workflow_dispatch:
-    inputs:
-      gpui_ref:
-        description: Full Chord-Ink/gpui commit SHA
-        required: true
-        type: string
-        default: 4570b414a6a02d614de3e525203874313c4876ec
   push:
     branches:
       - main
@@ -19,78 +12,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  closeout:
-    name: Native closeout (${{ matrix.run_on }})
-    if: >-
-      (github.event_name == 'pull_request' && github.head_ref == 'codex/inkui-closeout-20260922') ||
-      (github.event_name == 'workflow_dispatch' && github.ref_name == 'codex/inkui-closeout-20260922')
-    permissions:
-      contents: read
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        run_on: [macos-latest, ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.run_on }}
-    env:
-      GPUI_REF: ${{ inputs.gpui_ref || '4570b414a6a02d614de3e525203874313c4876ec' }}
-      RUSTC_WRAPPER: ""
-    defaults:
-      run:
-        shell: pwsh
-        working-directory: gpui-kit
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          path: gpui-kit
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-      - name: Validate GPUI SHA
-        run: |
-          if ($env:GPUI_REF -cnotmatch '^[0-9a-f]{40}$') {
-            throw 'gpui_ref must be a full lowercase commit SHA'
-          }
-      - uses: actions/checkout@v4
-        with:
-          repository: Chord-Ink/gpui
-          ref: ${{ env.GPUI_REF }}
-          path: gpui
-          persist-credentials: false
-      - name: Pin local GPUI dependencies
-        run: |
-          $actual = git -C ../gpui rev-parse HEAD
-          if ($LASTEXITCODE -ne 0 -or $actual -cne $env:GPUI_REF) {
-            throw 'GPUI checkout does not match gpui_ref'
-          }
-          Write-Output "GPUI commit: $actual"
-          git rev-parse HEAD
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot identify Base checkout' }
-          $gpuiRoot = (Resolve-Path ../gpui).Path.Replace('\', '/')
-          $config = @('[patch."https://github.com/Chord-Ink/gpui"]')
-          foreach ($name in @('gpui', 'gpui_platform', 'gpui_web', 'gpui_macros', 'reqwest_client', 'sum_tree')) {
-            $config += "$name = { path = '$gpuiRoot/crates/$name' }"
-          }
-          $manifest = Get-Content ../gpui/Cargo.toml -Raw
-          $patches = [regex]::Match($manifest, '(?ms)^\[patch\.crates-io\]\r?\n.*?(?=^\[|\z)').Value
-          $config += $patches
-          Set-Content .cargo/closeout.toml -Value $config -Encoding utf8
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          components: clippy
-          rust-src-dir: gpui-kit
-          rustflags: ""
-          cache-key: ${{ env.GPUI_REF }}
-      - name: Install system dependencies
-        if: runner.os == 'Linux'
-        shell: bash
-        run: script/bootstrap
-      - name: Check native consumers
-        run: cargo --config .cargo/closeout.toml check -p gpui-base -p gpui-component --lib --bins --tests --examples
-      - name: Test Base and components
-        run: cargo --config .cargo/closeout.toml test -p gpui-base -p gpui-component --lib --tests
-      - name: Lint native consumers
-        run: cargo --config .cargo/closeout.toml clippy -p gpui-base -p gpui-component --lib --bins --tests --examples -- -D warnings
-
   test:
     name: Test
     if: github.event_name != 'workflow_dispatch' && github.head_ref != 'codex/inkui-closeout-20260922'
