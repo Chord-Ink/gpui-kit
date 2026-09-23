@@ -7,8 +7,9 @@ use gpui::{
     Action, App, AppContext, Bounds, ClipboardItem, Context, Edges, Entity, EntityInputHandler,
     EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyBinding,
     KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
-    Pixels, Point, Render, ScrollHandle, ScrollWheelEvent, SharedString, Styled as _, Subscription,
-    UTF16Selection, Window, actions, div, point, prelude::FluentBuilder as _, px,
+    Pixels, Point, Render, Role, ScrollHandle, ScrollWheelEvent, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, UTF16Selection, Window, actions,
+    div, point, prelude::FluentBuilder as _, px,
 };
 use ropey::{Rope, RopeSlice};
 use serde::Deserialize;
@@ -351,6 +352,7 @@ pub struct InputBaseState<M: InputModeKind> {
     /// colours once and then never see them as unset again, which is the same
     /// freeze in a different place.
     projected_editor_style: InputEditorStyle,
+    accessibility: InputAccessibility,
 
     /// The mask pattern for formatting the input text
     pub(crate) mask_pattern: MaskPattern,
@@ -420,6 +422,38 @@ pub struct InputPresentation {
     text_align: TextAlign,
     placeholder: SharedString,
     mask_placeholder: Option<String>,
+}
+
+/// The name and popup state reported by the focused editor.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct InputAccessibility {
+    label: Option<SharedString>,
+    expanded: Option<bool>,
+}
+
+impl InputAccessibility {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    /// Reports an editable combobox with this popup state.
+    pub fn with_expanded(mut self, expanded: bool) -> Self {
+        self.expanded = Some(expanded);
+        self
+    }
+
+    pub fn label(&self) -> Option<&SharedString> {
+        self.label.as_ref()
+    }
+
+    pub fn expanded(&self) -> Option<bool> {
+        self.expanded
+    }
 }
 
 impl InputPresentation {
@@ -662,6 +696,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             mask_pattern_set: false,
             editor_style: InputEditorStyle::default(),
             projected_editor_style: InputEditorStyle::default(),
+            accessibility: InputAccessibility::default(),
             diagnostic_popover: None,
             context_menu_handler: None,
             pending_context_menu: None,
@@ -752,6 +787,13 @@ impl<M: InputModeKind> InputBaseState<M> {
     pub fn set_editor_style(&mut self, style: InputEditorStyle) {
         self.editor_style = style.clone();
         self.projected_editor_style = style;
+    }
+
+    pub fn set_accessibility(&mut self, accessibility: InputAccessibility, cx: &mut Context<Self>) {
+        if self.accessibility != accessibility {
+            self.accessibility = accessibility;
+            cx.notify();
+        }
     }
 
     /// Set presentation padding for multi-line text and its scrollbar layout.
@@ -3110,8 +3152,35 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
             self._pending_update = false;
         }
 
+        let role = if self.masked {
+            Role::PasswordInput
+        } else if self.accessibility.expanded.is_some() {
+            Role::EditableComboBox
+        } else if self.is_multi_line() {
+            Role::MultilineTextInput
+        } else {
+            Role::TextInput
+        };
+        let disabled = self.disabled;
+        let readonly = self.readonly;
         let element = div()
             .id("input-state")
+            .role(role)
+            .when_some(self.accessibility.label.clone(), |this, label| {
+                this.aria_label(label)
+            })
+            .when_some(self.accessibility.expanded, |this, expanded| {
+                this.aria_expanded(expanded)
+            })
+            .when(!self.masked, |this| this.aria_value(self.text.to_string()))
+            .a11y_synthetic_children(move |tree| {
+                if disabled {
+                    tree.parent_node().set_disabled();
+                }
+                if readonly {
+                    tree.parent_node().set_read_only();
+                }
+            })
             .key_context(CONTEXT)
             // A disabled input is neither focusable nor a tab stop.
             .when(!self.disabled, |this| this.track_focus(&self.focus_handle))
